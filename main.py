@@ -15,6 +15,9 @@ from torch.utils.data import random_split
 import random
 import wandb
 import torch.nn as nn
+from torchvision.transforms import Normalize
+import torchvision.utils as vutils
+from torchvision.transforms.functional import to_pil_image
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Using device:", device)
@@ -40,13 +43,14 @@ if not os.path.exists(data_dir):
         rf.extractall(data_dir)
 
 transform = Compose([
-    Resize((32, 32)),
-    Grayscale(),
-    ToTensor()
+    Resize((128, 128)),
+    #Grayscale(),
+    ToTensor(),
+    Normalize(mean=[0.5], std=[0.5]),
 ])
 
 class VideoDataset(torch.utils.data.Dataset):
-    def __init__(self, root_dir, transform=None, use_percentage=1.0, seq_len=10, num_seq=8, downsample=3):
+    def __init__(self, root_dir, transform=None, use_percentage=1.0, seq_len=5, num_seq=8, downsample=3):
         self.root_dir = root_dir
         self.transform = transform
         self.seq_len = seq_len
@@ -80,7 +84,7 @@ class VideoDataset(torch.utils.data.Dataset):
                 raise RuntimeError("Failed to find a video with enough frames")
         return {'video': video_frames}
 
-def read_video_frames(video_path, transform, seq_len=10, num_seq=8, downsample=3):
+def read_video_frames(video_path, transform, seq_len=6, num_seq=8, downsample=3):
     cap = cv2.VideoCapture(video_path)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     frames = []
@@ -106,7 +110,7 @@ def read_video_frames(video_path, transform, seq_len=10, num_seq=8, downsample=3
             cap.release()
             return None
 
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        #frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         frame = Image.fromarray(frame)
         if transform:
             frame = transform(frame)
@@ -126,8 +130,28 @@ def process_output(mask):
     return target, (B, B2, NS, NP, SQ)
 
 
+def calc_topk_accuracy(output, target, topk=(1,)):
+    '''
+    Modified from: https://gist.github.com/agermanidis/275b23ad7a10ee89adccf021536bb97e
+    Given predicted and ground truth labels, 
+    calculate top-k accuracies.
+    '''
+    maxk = max(topk)
+    batch_size = target.size(0)
+
+    _, pred = output.topk(maxk, 1, True, True)
+    pred = pred.t()
+    correct = pred.eq(target.view(1, -1).expand_as(pred))
+
+    res = []
+    for k in topk:
+        correct_k = correct[:k].contiguous().view(-1).float().sum(0)
+        res.append(correct_k.mul_(1 / batch_size))
+    return res
+
+
 def main():
-    wandb.init(project="Dual-Stream", config = {"learning_rate": 0.01, "epochs": 100, "batch_size": 4})
+    wandb.init(project="Dual-Stream", config = {"learning_rate": 0.0002, "epochs": 150, "batch_size": 6})
     
     dataset = VideoDataset(root_dir='UCF-101/UCF-101', transform=transform)
 
@@ -135,44 +159,55 @@ def main():
     train_size = len(dataset) - val_size
     train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 
-    train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True, num_workers=16, drop_last=True)
-    val_loader = DataLoader(val_dataset, batch_size=4, shuffle=False, num_workers=16, drop_last=True)
+    train_loader = DataLoader(train_dataset, batch_size=6, shuffle=True, num_workers=16, drop_last=True)
+    val_loader = DataLoader(val_dataset, batch_size=6, shuffle=False, num_workers=16, drop_last=True)
     
     model = DualStream().to(device)
     inputs = next(iter(train_loader))['video'].to(device)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-6, amsgrad=True, eps=1e-8)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.0002, weight_decay=1e-5, amsgrad=True, eps=1e-8)
+    scheduler=torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.80)
 
-    num_epochs = 100
-    log_interval = 20
+    num_epochs = 150
+
+    unique_step_identifier = 0
+
+    single_example = torch.randn(inputs.shape).to(device)
 
     for epoch in range(num_epochs):
         running_loss = 0.0
 
         for i, batch in enumerate(train_loader):
             inputs = batch['video'].to(device)
+            #inputs = torch.zeros(inputs.shape).to(device)
+            #inputs = single_example
 
             score, mask = model(inputs)
+
             B = inputs.size(0)
 
-            if i == 0: target, (_, B2, NS, NP, SQ) = process_output(mask)
+            target, (_, B2, NS, NP, SQ) = process_output(mask)
 
             score_flattened = score.reshape(B*NP*SQ, B2*NS*SQ)
             target_flattened = target.reshape(B*NP*SQ, B2*NS*SQ)
-            target_flattened_numerical = target_flattened.int()
-            target_flattened = target_flattened_numerical.argmax(dim=1)
+
+            target_flattened= target_flattened.int()
+            target_flattened = target_flattened.argmax(dim=1)
 
             loss = criterion(score_flattened, target_flattened)
             
             running_loss += loss.item()
 
-            if i % 1 == 0:
-                print(f'Epoch {epoch + 1}, Batch {i}, Loss: {loss.item()}')
-                wandb.log({"train_loss": loss.item()})
+            print(f'Epoch {epoch + 1}, Batch {i}, Loss: {loss.item()}')
+            unique_step_identifier += 1
+            wandb.log({"train_loss": loss.item()}, step=unique_step_identifier)
+            wandb.log({"learning_rate": optimizer.param_groups[0]['lr']}, step=unique_step_identifier)
 
             if i % 250 == 0:
                 input_frame_to_log = inputs[0, :, 0, :, :].cpu()
-                wandb.log({"example_input": [wandb.Image(input_frame_to_log, caption="Example Input Frame")]})
+                wandb.log({"example_input": [wandb.Image(input_frame_to_log, caption="Example Input Frame")]}, step=unique_step_identifier)
+
+            wandb.log({"top15_accuracy": calc_topk_accuracy(score_flattened, target_flattened, topk=(1,5))[0]}, step=unique_step_identifier)
 
             optimizer.zero_grad()
             loss.backward()
@@ -180,12 +215,14 @@ def main():
             if(i % 500 == 0):
                 for name, param in model.named_parameters():
                     if param.requires_grad:
-                        wandb.log({f"gradients/{name}": wandb.Histogram(param.grad.cpu().numpy())})
+                        wandb.log({f"gradients/{name}": wandb.Histogram(param.grad.cpu().numpy())}, step=unique_step_identifier)
 
             optimizer.step()
 
+        scheduler.step()
         model.eval()
         val_loss = 0.0
+        val_top_k_accuracy = 0.0
         with torch.no_grad():
             for batch in val_loader:
                 inputs = batch['video'].to(device)
@@ -194,16 +231,20 @@ def main():
                 B = inputs.size(0)
                 
                 score_flattened = score.reshape(B*NP*SQ, B2*NS*SQ)
+
                 target_flattened = target.reshape(B*NP*SQ, B2*NS*SQ)
                 target_flattened_numerical = target_flattened.int()
                 target_flattened = target_flattened_numerical.argmax(dim=1)
 
+
                 loss = criterion(score_flattened, target_flattened)
                 val_loss += loss.item()
-                wandb.log({"val_loss": loss / len(val_loader)})
+                val_top_k_accuracy += calc_topk_accuracy(score_flattened, target_flattened, topk=(1,5))[0]
 
         average_val_loss = val_loss / len(val_loader)
-        print(f'Epoch {epoch + 1} Validation Loss: {average_val_loss}')
+        average_val_top_k_accuracy = val_top_k_accuracy / len(val_loader)
+        wandb.log({"val_loss": average_val_loss})
+        wandb.log({"validation_top15_accuracy": average_val_top_k_accuracy}, step=unique_step_identifier)
 
         checkpoint_path = 'model.pth'
         if (epoch + 1) % 1 == 0:

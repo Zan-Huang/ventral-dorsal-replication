@@ -7,6 +7,8 @@ import math
 import torch.nn.functional as F
 import torch.nn.init as init
 
+universal_dropout = 0.15
+universal_drop_connect = 0.15
 
 class DPC_RNN(nn.Module):
     def __init__(self, feature_size, hidden_size, kernel_size, num_layers, pred_steps, seq_len):
@@ -37,10 +39,10 @@ class DPC_RNN(nn.Module):
         self._initialize_weights(self.network_pred)
 
     def forward(self, block, B, N, C, SL, H, W):
-        finalW = 8
-        finalH = 8
+        finalW = 32
+        finalH = 32
 
-        feature = F.avg_pool3d(block, ((10, 1, 1)), stride=(1, 1, 1)) # set to 10 in order to full reduce the 10 SL
+        feature = F.avg_pool3d(block, ((5, 1, 1)), stride=(1, 1, 1)) # set to 6 in order to full reduce the 6 SL
         feature_inf_all = feature.view(B, N, C, finalW, finalH)
 
         feature = self.relu(feature)
@@ -58,7 +60,6 @@ class DPC_RNN(nn.Module):
             p_tmp = self.network_pred(hidden)
             pred.append(p_tmp)
 
-            #test_vector = 
             _, hidden = self.agg(self.relu(p_tmp).unsqueeze(1), hidden_state = hidden.unsqueeze(0))
             hidden = hidden[:, -1, :]
         pred = torch.stack(pred, 1)
@@ -70,19 +71,22 @@ class DPC_RNN(nn.Module):
 
         pred = pred.permute(0, 1, 3, 4, 2).contiguous().view(B*self.pred_steps*finalH*finalW, self.feature_size)
         feature_inf = feature_inf.permute(0, 1, 3, 4, 2).contiguous().view(B*N*finalH*finalW, self.feature_size).transpose(0,1)
-
         score = torch.matmul(pred, feature_inf).view(B, self.pred_steps, finalH * finalW, B, N, finalH*finalW)
         del feature_inf, pred
 
-        mask = torch.zeros((B, self.pred_steps, finalH*finalW, B, N, finalH*finalW), dtype=torch.bool, device=score.device).requires_grad_(False).detach()
-        mask[torch.arange(B), :, :, torch.arange(B), :, :] = -3 # spatial negatives
-        for k in range(B):
-            mask[k, :, torch.arange(finalH*finalW), k, :, torch.arange(finalH*finalW)] = -1 # temporal negatives
-        tmp = mask.permute(0, 2, 1, 3, 5, 4).contiguous().view(B*finalH*finalW, self.pred_steps, B*finalH*finalW, N)
-        for j in range(B*finalH*finalW):
-            tmp[j, torch.arange(self.pred_steps), j, torch.arange(N-self.pred_steps, N)] = 1
+        if self.mask is None:
+            mask = torch.zeros((B, self.pred_steps, finalH*finalW, B, N, finalH*finalW), dtype=torch.bool, device=score.device).requires_grad_(False).detach()
+            mask[torch.arange(B), :, :, torch.arange(B), :, :] = -3 # spatial negatives
+            for k in range(B):
+                mask[k, :, torch.arange(finalH*finalW), k, :, torch.arange(finalH*finalW)] = -1 # temporal negatives
+            tmp = mask.permute(0, 2, 1, 3, 5, 4).contiguous().view(B*finalH*finalW, self.pred_steps, B*finalH*finalW, N)
+            for j in range(B*finalH*finalW):
+                tmp[j, torch.arange(self.pred_steps), j, torch.arange(N-self.pred_steps, N)] = 1
 
-        mask = tmp.view(B, finalH * finalW, self.pred_steps, B, finalH * finalW, N).permute(0,2,1,3,5,4)
+            mask = tmp.view(B, finalH * finalW, self.pred_steps, B, finalH * finalW, N).permute(0,2,1,3,5,4)
+
+        #mask = torch.randint(low=0, high=1, size=score.shape, device=score.device)
+        #print(mask)
 
         return score, mask
 
@@ -97,37 +101,35 @@ class DPC_RNN(nn.Module):
 class DualStream(nn.Module):
     def __init__(self):
         super(DualStream, self).__init__()
-        self.conv1_layer = nn.Conv3d(in_channels=1, out_channels=256, kernel_size=(5, 7, 7), padding=(2, 3, 3), stride=(1, 2, 2))
+        self.conv1_layer = nn.Conv3d(in_channels=3, out_channels=256, kernel_size=(5, 7, 7), padding=(2, 3, 3), stride=(1, 2, 2))
         self.conv1_pool = nn.AvgPool3d(kernel_size=(1, 3, 3), padding=(0, 1, 1), stride=(1, 2, 2))
         self.norm = nn.BatchNorm3d(256)
         self.relu = nn.LeakyReLU(negative_slope=0.01)
 
-        self.stream1_block1 = ResBlock(dim_in=256, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=0.20)
-        self.stream1_block2 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=0.20)
-        self.stream1_block3 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=0.20)
-        self.stream1_block4 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=0.20)
-        self.stream1_block5 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=0.20)
-        self.stream1_block6 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=0.20)
-        self.stream1_block7 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=0.20)
-        self.stream1_block8 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=0.20)
-        self.stream1_block9 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=0.20)
-        self.stream1_block10 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=0.20)    
+        self.stream1_block1 = ResBlock(dim_in=256, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect)
+        self.stream1_block2 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect)
+        self.stream1_block3 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect)
+        self.stream1_block4 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect)
+        self.stream1_block5 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect)
+        self.stream1_block6 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect)
+        self.stream1_block7 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect)
+        self.stream1_block8 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect)
+        self.stream1_block9 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect)
+        self.stream1_block10 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect)    
 
-        self.stream2_block1 = ResBlock(dim_in=256, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=0.20)
-        self.stream2_block2 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=0.20)
-        self.stream2_block3 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=0.20)
-        self.stream2_block4 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=0.20)
-        self.stream2_block5 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=0.20)
-        self.stream2_block6 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=0.20)
-        self.stream2_block7 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=0.20)
-        self.stream2_block8 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=0.20)
-        self.stream2_block9 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=0.20)
-        self.stream2_block10 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=0.20)
-    
-        #this parameter below must be changed at times
-        self.dpc_rnn = DPC_RNN(feature_size=256, hidden_size=256, kernel_size=1, num_layers=1, pred_steps=3, seq_len=5)
+        self.stream2_block1 = ResBlock(dim_in=256, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect)
+        self.stream2_block2 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect)
+        self.stream2_block3 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect)
+        self.stream2_block4 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect)
+        self.stream2_block5 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect)
+        self.stream2_block6 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect)
+        self.stream2_block7 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect)
+        self.stream2_block8 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect)
+        self.stream2_block9 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect)
+        self.stream2_block10 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect)
 
-        init.kaiming_normal_(self.conv1_layer.weight, mode='fan_out', nonlinearity='relu')
+
+        """init.kaiming_normal_(self.conv1_layer.weight, mode='fan_out', nonlinearity='relu')
         
         # Initialize stream1 blocks with Kaiming initialization
         for block in [self.stream1_block1, self.stream1_block2]:
@@ -139,7 +141,9 @@ class DualStream(nn.Module):
         for block in [self.stream2_block1, self.stream2_block2]:
             for name, param in block.named_parameters():
                 if 'weight' in name and param.dim() > 1:
-                    init.kaiming_uniform_(param, a=math.sqrt(5))
+                    init.kaiming_uniform_(param, a=math.sqrt(5))"""
+
+        self.dpc_rnn = DPC_RNN(feature_size=256, hidden_size=256, kernel_size=1, num_layers=1, pred_steps=3, seq_len=5)
 
     def forward(self, x):
         B, N, SL, C, H, W = x.shape
@@ -174,8 +178,10 @@ class DualStream(nn.Module):
         stream2layer10 = self.stream2_block10(stream2layer9)
 
         concat_layer = torch.cat((stream1layer10, stream2layer10), dim=1)
+        concat_layer = nn.Dropout(universal_dropout)(concat_layer)
 
         prediction, target = self.dpc_rnn(concat_layer, B, N, 256, SL, H, W)
 
         return prediction, target
+    
     

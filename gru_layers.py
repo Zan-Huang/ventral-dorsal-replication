@@ -15,17 +15,9 @@ class ConvGRUCell(nn.Module):
         self.update_gate = nn.Conv2d(input_size+hidden_size, hidden_size, kernel_size, padding=padding)
         self.out_gate = nn.Conv2d(input_size+hidden_size, hidden_size, kernel_size, padding=padding)
 
-        """nn.init.orthogonal_(self.reset_gate.weight)
+        nn.init.orthogonal_(self.reset_gate.weight)
         nn.init.orthogonal_(self.update_gate.weight)
         nn.init.orthogonal_(self.out_gate.weight)
-        nn.init.constant_(self.reset_gate.bias, 0.)
-        nn.init.constant_(self.update_gate.bias, 0.)
-        nn.init.constant_(self.out_gate.bias, 0.)"""
-
-        nn.init.kaiming_normal_(self.reset_gate.weight, mode='fan_out', nonlinearity='relu')
-        nn.init.kaiming_normal_(self.update_gate.weight, mode='fan_out', nonlinearity='relu')
-        nn.init.kaiming_normal_(self.out_gate.weight, mode='fan_out', nonlinearity='relu')
-
         nn.init.constant_(self.reset_gate.bias, 0.)
         nn.init.constant_(self.update_gate.bias, 0.)
         nn.init.constant_(self.out_gate.bias, 0.)
@@ -35,7 +27,7 @@ class ConvGRUCell(nn.Module):
             B, C, *spatial_dim = input_tensor.size()
             hidden_state = torch.zeros([B,self.hidden_size,*spatial_dim]).cuda()
         # [B, C, H, W]
-        combined = torch.cat([input_tensor, hidden_state], dim=1) #concat in C
+        combined = torch.cat([input_tensor, hidden_state], dim=1)
         update = torch.sigmoid(self.update_gate(combined))
         reset = torch.sigmoid(self.reset_gate(combined))
         out = torch.tanh(self.out_gate(torch.cat([input_tensor, hidden_state * reset], dim=1)))
@@ -45,7 +37,7 @@ class ConvGRUCell(nn.Module):
 
 class ConvGRU(nn.Module):
     ''' Initialize a multi-layer Conv GRU '''
-    def __init__(self, input_size, hidden_size, kernel_size, num_layers, dropout=0.2):
+    def __init__(self, input_size, hidden_size, kernel_size, num_layers, dropout=0.1):
         super(ConvGRU, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size

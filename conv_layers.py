@@ -1,6 +1,9 @@
 import torch.nn as nn
 import torch
 
+INIT_WEIGHT_MEAN = -0.009
+INIT_WEIGHT_STD = 0.152
+
 class ResBlock(nn.Module):
     """
     ResBlock represents a Residual Block with a Bottleneck Transformation.
@@ -78,6 +81,21 @@ class ResBlock(nn.Module):
             )
 
         self.relu = nn.ReLU(inplace=True)
+        self._initialize_weights()
+
+    def _initialize_weights(self):
+        """
+        Initializes weights of the convolutional layers using a normal distribution
+        with specified mean and standard deviation.
+        """
+        for m in self.modules():
+            if isinstance(m, nn.Conv3d):
+                nn.init.normal_(m.weight, mean=INIT_WEIGHT_MEAN, std=INIT_WEIGHT_STD)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm3d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
 
     def _drop_connect(self, x, drop_ratio):
         """
