@@ -15,9 +15,15 @@ from torch.utils.data import random_split
 import random
 import wandb
 import torch.nn as nn
-from torchvision.transforms import Normalize
+from torchvision.transforms import Normalize, RandomGrayscale, RandomHorizontalFlip, ColorJitter
 import torchvision.utils as vutils
 from torchvision.transforms.functional import to_pil_image
+
+
+import torch
+import torch.optim as optim
+from torch.utils import data
+from torchvision import datasets, models, transforms
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Using device:", device)
@@ -46,6 +52,9 @@ transform = Compose([
     Resize((128, 128)),
     #Grayscale(),
     ToTensor(),
+    RandomGrayscale(p=0.5),
+    #RandomHorizontalFlip(),
+    ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.25),
     Normalize(mean=[0.5], std=[0.5]),
 ])
 
@@ -122,7 +131,7 @@ def read_video_frames(video_path, transform, seq_len=6, num_seq=8, downsample=3)
 
 def process_output(mask):
     '''task mask as input, compute the target for contrastive loss'''
-    # dot product is computed in parallel gpus, so get less easy neg, bounded by batch size in each gpu'''
+    # dot product is computed in parallel gpus, so get less easy neg, bounded by batch size in each gpu
     # mask meaning: -2: omit, -1: temporal neg (hard), 0: easy neg, 1: pos, -3: spatial neg
     (B, NP, SQ, B2, NS, _) = mask.size() # [B, P, SQ, B, N, SQ]
     target = mask == 1
@@ -149,9 +158,11 @@ def calc_topk_accuracy(output, target, topk=(1,)):
         res.append(correct_k.mul_(1 / batch_size))
     return res
 
+BATCH_SIZE = 12
+LR = 0.001
 
 def main():
-    wandb.init(project="Dual-Stream", config = {"learning_rate": 0.0002, "epochs": 150, "batch_size": 6})
+    wandb.init(project="Dual-Stream", config = {"learning_rate": LR, "epochs": 100, "batch_size": BATCH_SIZE, "architecture": "Dual-Stream"})
     
     dataset = VideoDataset(root_dir='UCF-101/UCF-101', transform=transform)
 
@@ -159,14 +170,17 @@ def main():
     train_size = len(dataset) - val_size
     train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 
-    train_loader = DataLoader(train_dataset, batch_size=6, shuffle=True, num_workers=16, drop_last=True)
-    val_loader = DataLoader(val_dataset, batch_size=6, shuffle=False, num_workers=16, drop_last=True)
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=10, drop_last=True)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=10, drop_last=True)
     
-    model = DualStream().to(device)
+    model = DualStream()
+    model = nn.DataParallel(model, device_ids=[0, 1])
+    model = model.to(device)
+
     inputs = next(iter(train_loader))['video'].to(device)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.0002, weight_decay=1e-5, amsgrad=True, eps=1e-8)
-    scheduler=torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.80)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-5, amsgrad=True, eps=1e-8)
+    #scheduler=torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.80)
 
     num_epochs = 150
 
@@ -207,7 +221,7 @@ def main():
                 input_frame_to_log = inputs[0, :, 0, :, :].cpu()
                 wandb.log({"example_input": [wandb.Image(input_frame_to_log, caption="Example Input Frame")]}, step=unique_step_identifier)
 
-            wandb.log({"top15_accuracy": calc_topk_accuracy(score_flattened, target_flattened, topk=(1,5))[0]}, step=unique_step_identifier)
+            wandb.log({"top13_accuracy": calc_topk_accuracy(score_flattened, target_flattened, topk=(1,3))[0]}, step=unique_step_identifier)
 
             optimizer.zero_grad()
             loss.backward()
@@ -219,7 +233,7 @@ def main():
 
             optimizer.step()
 
-        scheduler.step()
+        #scheduler.step()
         model.eval()
         val_loss = 0.0
         val_top_k_accuracy = 0.0
@@ -239,12 +253,12 @@ def main():
 
                 loss = criterion(score_flattened, target_flattened)
                 val_loss += loss.item()
-                val_top_k_accuracy += calc_topk_accuracy(score_flattened, target_flattened, topk=(1,5))[0]
+                val_top_k_accuracy += calc_topk_accuracy(score_flattened, target_flattened, topk=(1,3))[0]
 
         average_val_loss = val_loss / len(val_loader)
         average_val_top_k_accuracy = val_top_k_accuracy / len(val_loader)
         wandb.log({"val_loss": average_val_loss})
-        wandb.log({"validation_top15_accuracy": average_val_top_k_accuracy}, step=unique_step_identifier)
+        wandb.log({"validation_top13_accuracy": average_val_top_k_accuracy})
 
         checkpoint_path = 'model.pth'
         if (epoch + 1) % 1 == 0:
