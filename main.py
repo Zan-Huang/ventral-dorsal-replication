@@ -93,7 +93,7 @@ class VideoDataset(torch.utils.data.Dataset):
                 raise RuntimeError("Failed to find a video with enough frames")
         return {'video': video_frames}
 
-def read_video_frames(video_path, transform, seq_len=6, num_seq=8, downsample=3):
+def read_video_frames(video_path, transform, seq_len=5, num_seq=8, downsample=3):
     cap = cv2.VideoCapture(video_path)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     frames = []
@@ -158,7 +158,7 @@ def calc_topk_accuracy(output, target, topk=(1,)):
         res.append(correct_k.mul_(1 / batch_size))
     return res
 
-BATCH_SIZE = 12
+BATCH_SIZE = 10
 LR = 0.001
 
 def main():
