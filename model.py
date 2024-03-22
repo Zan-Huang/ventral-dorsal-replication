@@ -39,10 +39,10 @@ class DPC_RNN(nn.Module):
         self._initialize_weights(self.network_pred)
 
     def forward(self, block, B, N, C, SL, H, W):
-        finalW = 68
-        finalH = 20
+        finalW = 16
+        finalH = 17
 
-        feature = F.avg_pool3d(block, ((8, 1, 1)), stride=(1, 1, 1))
+        feature = F.avg_pool3d(block, ((5, 1, 1)), stride=(1, 1, 1))
         feature_inf_all = feature.view(B, N, C, finalW, finalH)
 
         feature = self.relu(feature)
