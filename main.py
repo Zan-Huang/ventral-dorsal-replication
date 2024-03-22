@@ -7,7 +7,7 @@ from torchvision.transforms import Compose, Resize, Grayscale, ToTensor
 from model import DualStream
 import ssl
 from PIL import Image
-#import cv2
+import cv2
 import torch.multiprocessing as mp
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader, Dataset
@@ -47,11 +47,11 @@ criterion = nn.CrossEntropyLoss().to(device)
 
 transform = v2.Compose([
     #v2.RandomResizedCrop(size=(256, 256), antialias=True),
-    v2.Resize((128, 170)),
+    v2.Resize((64, 65)),
     v2.ToTensor(),
 ])
 
-"""class MomentsInTimeDataset(Dataset):
+class MomentsInTimeDataset(Dataset):
     def __init__(self, root_dir, split='training', transform=None, use_percentage=1.0, seq_len=5, num_seq=8, downsample=3):
         self.root_dir = os.path.join(root_dir, split)
         self.transform = transform
@@ -122,9 +122,9 @@ def read_video_frames(video_path, transform, seq_len=5, num_seq=8, downsample=3)
         frames.append(frame)
 
     cap.release()
-    return torch.stack(frames, dim=0).view(num_seq, seq_len, *frames[0].size())"""
+    return torch.stack(frames, dim=0).view(num_seq, seq_len, *frames[0].size())
 
-class MomentsInTimeDataset(Dataset):
+"""class MomentsInTimeDataset(Dataset):
     def __init__(self, root_dir, split='training', transform=None, use_percentage=1.0, seq_len=5, num_seq=8, downsample=3):
         self.root_dir = os.path.join(root_dir, split)
         self.transform = transform
@@ -177,7 +177,7 @@ def read_video_frames(video_path, transform, seq_len=5, num_seq=8, downsample=3)
     if len(frames) < seq_len * num_seq:
         return None  # Not enough frames
 
-    return torch.stack(frames, dim=0).view(num_seq, seq_len, *frames[0].shape)
+    return torch.stack(frames, dim=0).view(num_seq, seq_len, *frames[0].shape)"""
 
 
 
@@ -210,7 +210,7 @@ def calc_topk_accuracy(output, target, topk=(1,)):
         res.append(correct_k.mul_(1 / batch_size))
     return res
 
-BATCH_SIZE = 12
+BATCH_SIZE = 45
 LR = 0.001
 
 def main():
