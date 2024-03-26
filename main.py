@@ -18,6 +18,7 @@ from torchvision.transforms import Normalize, RandomGrayscale, RandomHorizontalF
 import torchvision.utils as vutils
 from torchvision.transforms.functional import to_pil_image
 from torch.nn.parallel import DistributedDataParallel as DDP
+import torchvision.transforms.functional as TF
 from torchvision.transforms import v2
 
 import torch
@@ -25,8 +26,29 @@ import torch.optim as optim
 from torch.utils import data
 from torchvision import datasets, models, transforms
 from torchvision.io import read_video
+from torchvision.utils import make_grid
 
-data_dir = '/home/libiadm/export/HDD2/datasets/moments_in_time/Moments_in_Time_Raw'
+
+def log_sampled_frames(frames, num_seq=8, seq_len=5, downsample=3, resize_shape=(64, 65)):
+    """
+    Log a grid of sampled frames from a video sequence.
+
+    Args:
+    - frames: A tensor of video frames of shape (num_seq, seq_len, C, H, W).
+    - num_seq: Number of sequences sampled from the video.
+    - seq_len: Number of frames in each sequence.
+    - downsample: Factor by which frames were downsampled.
+    - resize_shape: Resize shape for each frame, for consistent grid display.
+    """
+    selected_frames = frames[:, 0]  # Select the first frame from each sequence for simplicity
+    selected_frames_resized = torch.stack([TF.resize(frame, resize_shape) for frame in selected_frames])
+    frame_grid = make_grid(selected_frames_resized, nrow=num_seq, normalize=True)
+    grid_image = to_pil_image(frame_grid)
+    wandb.log({"sampled_frames": [wandb.Image(grid_image, caption="Sampled Frames")]})
+
+
+#data_dir = '/home/libiadm/export/HDD2/datasets/moments_in_time/Moments_in_Time_Raw'
+data_dir = '/home/zanh/ventral-dorsal-replication/UCF-101/UCF-101'
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Using device:", device)
@@ -53,7 +75,8 @@ transform = v2.Compose([
 
 class MomentsInTimeDataset(Dataset):
     def __init__(self, root_dir, split='training', transform=None, use_percentage=1.0, seq_len=5, num_seq=8, downsample=3):
-        self.root_dir = os.path.join(root_dir, split)
+        #self.root_dir = os.path.join(root_dir, split) #we are using non split
+        self.root_dir = root_dir
         self.transform = transform
         self.seq_len = seq_len
         self.num_seq = num_seq
@@ -67,7 +90,7 @@ class MomentsInTimeDataset(Dataset):
                 for video_file in os.listdir(category_path):
                     video_path = os.path.join(category_path, video_file)
                     # Adjust the file extension as needed for your dataset
-                    if video_file.endswith('.mp4'):
+                    if video_file.endswith('.avi'):
                         self.video_files.append(video_path)
         
         random.shuffle(self.video_files)
@@ -124,62 +147,6 @@ def read_video_frames(video_path, transform, seq_len=5, num_seq=8, downsample=3)
     cap.release()
     return torch.stack(frames, dim=0).view(num_seq, seq_len, *frames[0].size())
 
-"""class MomentsInTimeDataset(Dataset):
-    def __init__(self, root_dir, split='training', transform=None, use_percentage=1.0, seq_len=5, num_seq=8, downsample=3):
-        self.root_dir = os.path.join(root_dir, split)
-        self.transform = transform
-        self.seq_len = seq_len
-        self.num_seq = num_seq
-        self.downsample = downsample
-        self.video_files = []
-
-        for action_category in os.listdir(self.root_dir):
-            category_path = os.path.join(self.root_dir, action_category)
-            if os.path.isdir(category_path):
-                for video_file in os.listdir(category_path):
-                    video_path = os.path.join(category_path, video_file)
-                    if video_file.endswith('.mp4'):
-                        self.video_files.append(video_path)
-
-        random.shuffle(self.video_files)
-        num_files_to_use = int(len(self.video_files) * use_percentage)
-        self.video_files = self.video_files[:num_files_to_use]
-
-    def __len__(self):
-        return len(self.video_files)
-
-    def __getitem__(self, idx):
-        video_path = self.video_files[idx]
-        video_frames = read_video_frames(video_path, self.transform, self.seq_len, self.num_seq, self.downsample)
-        return {'video': video_frames}
-
-def read_video_frames(video_path, transform, seq_len=5, num_seq=8, downsample=3):
-    video, _, _ = read_video(video_path, pts_unit='sec')
-    total_frames = video.size(0)
-    frames = []
-    frame_indices = []
-
-    if total_frames > 0:
-        spacing = max(1, (total_frames - downsample * (seq_len - 1)) // num_seq)
-
-    for seq_index in range(num_seq):
-        start_frame = seq_index * spacing
-        for frame_index in range(seq_len):
-            if start_frame + frame_index * downsample < total_frames:
-                frame_indices.append(start_frame + frame_index * downsample)
-
-    for frame_index in frame_indices:
-        frame = video[frame_index]
-        if transform:
-            frame = transform(frame)
-        frames.append(frame)
-
-    if len(frames) < seq_len * num_seq:
-        return None  # Not enough frames
-
-    return torch.stack(frames, dim=0).view(num_seq, seq_len, *frames[0].shape)"""
-
-
 
 def process_output(mask):
     '''task mask as input, compute the target for contrastive loss'''
@@ -210,7 +177,7 @@ def calc_topk_accuracy(output, target, topk=(1,)):
         res.append(correct_k.mul_(1 / batch_size))
     return res
 
-BATCH_SIZE = 45
+BATCH_SIZE = 38
 LR = 0.001
 
 def main():
@@ -219,8 +186,17 @@ def main():
     train_dataset = MomentsInTimeDataset(root_dir=data_dir, split='training', transform=transform)
     val_dataset = MomentsInTimeDataset(root_dir=data_dir, split='validation', transform=transform)
 
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=10, drop_last=True)
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=10, drop_last=True)
+    train_percentage = 0.8
+    train_size = int(train_percentage * len(train_dataset))
+    val_size = len(train_dataset) - train_size
+
+    train_dataset, val_dataset = data.random_split(train_dataset, [train_size, val_size])
+
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=10, pin_memory=True, drop_last=True)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=10, pin_memory=True, drop_last=True)
+
+    #train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=10, pin_memory=True, drop_last=True)
+    #val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=10, pin_memory = True, drop_last=True)
     
     model = DualStream()
     model = nn.DataParallel(model, device_ids=[0, 1])
@@ -264,9 +240,10 @@ def main():
             wandb.log({"train_loss": loss.item()}, step=unique_step_identifier)
             wandb.log({"learning_rate": optimizer.param_groups[0]['lr']}, step=unique_step_identifier)
 
-            if i % 10 == 0:
-                input_frame_to_log = inputs[0, :, 0, :, :].cpu()
-                wandb.log({"example_input": [wandb.Image(input_frame_to_log, caption="Example Input Frame")]}, step=unique_step_identifier)
+            if i % 100 == 0:
+                inputs = batch['video']
+                sampled_video = inputs[0]
+                log_sampled_frames(sampled_video, num_seq=8, seq_len=5, downsample=3)
 
             wandb.log({"top15_accuracy": calc_topk_accuracy(score_flattened, target_flattened, topk=(1,5))[0]}, step=unique_step_identifier)
 
