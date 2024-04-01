@@ -1,109 +1,130 @@
-import torch
 import os
-import random
+import torch
+import torch.nn as nn
 from torchvision.transforms import Compose, Resize, ToTensor
 from model import DualStream
-from torch.utils.data import DataLoader
-from main import MomentsInTimeDataset, read_video_frames
+from main import read_video_frames
+import random
 import numpy as np
-# Assuming the same device configuration as main.py
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+import matplotlib.pyplot as plt
+from scipy.spatial.distance import euclidean
+from sklearn.manifold import TSNE
+import matplotlib.cm as cm
 
-# Define transform (Assuming the same transform as in main.py for consistency)
+torch.cuda.set_device(1)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f'Using device: {device}')
+
 transform = Compose([
-    Resize((64, 65)),  # Resize to the dimensions used in training
+    Resize((64, 65)),
     ToTensor(),
 ])
 
-def select_random_videos(data_dir, num_videos=1, same_category=False):
-    """
-    Selects random videos from the dataset. Can select from the same category if specified.
-    """
-    video_paths = []
+class DualStreamWrapper(nn.Module):
+    def __init__(self, dual_stream_model):
+        super(DualStreamWrapper, self).__init__()
+        self.dual_stream = dual_stream_model
+    
+    def forward(self, x):
+        return self.dual_stream(x)
+
+def load_model():
+    model_path = 'model.pth'
+    dual_stream_model = DualStream().to(device)
+    state_dict = torch.load(model_path, map_location=device)
+    dual_stream_model.load_state_dict(state_dict, strict=False)
+    dual_stream_model.eval()
+    return DualStreamWrapper(dual_stream_model)
+
+def select_videos_from_each_category(data_dir, num_videos_per_category=2):
+    video_paths = {}
     categories = os.listdir(data_dir)
-    if same_category:
-        selected_category = random.choice(categories)
-        category_path = os.path.join(data_dir, selected_category)
+    for category in categories:
+        category_path = os.path.join(data_dir, category)
         videos = os.listdir(category_path)
         videos = [os.path.join(category_path, video) for video in videos if video.endswith('.avi')]
-        video_paths = random.sample(videos, min(num_videos, len(videos)))
-    else:
-        for _ in range(num_videos):
-            selected_category = random.choice(categories)
-            category_path = os.path.join(data_dir, selected_category)
-            videos = os.listdir(category_path)
-            videos = [os.path.join(category_path, video) for video in videos if video.endswith('.avi')]
-            if videos:
-                video_paths.append(random.choice(videos))
+        if len(videos) >= num_videos_per_category:
+            video_paths[category] = random.sample(videos, num_videos_per_category)
+        else:
+            video_paths[category] = videos
     return video_paths
 
 def load_video(video_path):
-    """
-    Load a video and apply transformations.
-    """
-    # Assuming read_video_frames is implemented correctly
     frames = read_video_frames(video_path, transform, seq_len=5, num_seq=8, downsample=3)
     if frames is not None:
-        frames = frames.unsqueeze(0)  # Add batch dimension
+        frames = frames.unsqueeze(0)
     return frames.to(device)
 
-def attach_hooks(model):
-    """
-    Attach a hook to capture the output of the concat_hook_layer.
-    """
-    outputs = {}
-
-    def hook(module, input, output):
-        outputs['concat'] = output.detach()
-
-    model.module.concat_hook_layer.register_forward_hook(hook)
-
-    return outputs
-
-def generate_output(model, video_paths, hook_outputs):
-    """
-    Process video through the model, capture the concatenated layer's output, and split it.
-    """
+def generate_latent_space(model, video_paths):
+    latent_space = []
     for video_path in video_paths:
         video_data = load_video(video_path)
         if video_data is None:
             print(f"Skipping video {video_path}, as it does not have enough frames.")
             continue
 
-        # Forward pass
         with torch.no_grad():
-            model(video_data)
+            _, _, concat_output = model(video_data)
+        latent_space.append(concat_output.cpu().numpy().flatten())
+    return np.array(latent_space)
 
-        # Assuming the outputs are stored under 'concat_layer'
-        concat_output = hook_outputs['concat_layer']
+def generate_latent_space_and_labels(model, video_paths, category_label):
+    latent_space = []
+    labels = []
+    for video_path in video_paths:
+        video_data = load_video(video_path)
+        if video_data is None:
+            print(f"Skipping video {video_path}, as it does not have enough frames.")
+            continue
 
-        # Split the concat_output tensor according to your model specifics.
-        # This is a placeholder; you need to adjust the slicing according to your actual tensor shapes.
-        stream1_output, stream2_output = torch.split(concat_output, split_size_or_sections=concat_output.size(1)//2, dim=1)
+        with torch.no_grad():
+            _, _, concat_output = model(video_data)
+        latent_space.append(concat_output.cpu().numpy().flatten())
+        labels.append(category_label)
+    return np.array(latent_space), labels
 
-        print(f"Video: {video_path} - Stream1 Output Shape: {stream1_output.shape}, Stream2 Output Shape: {stream2_output.shape}")
+def plot_tsne(latent_spaces, labels):
+    tsne = TSNE(n_components=2, random_state=42)
+    reduced_data = tsne.fit_transform(latent_spaces)
+    
+    # Create a subplot for the scatter plot
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    # Generate a color map based on the number of unique labels
+    num_unique_labels = len(set(labels))
+    colors = cm.rainbow(np.linspace(0, 1, num_unique_labels))
+    label_to_color = dict(zip(set(labels), colors))
+    
+    for label in set(labels):
+        indices = [i for i, l in enumerate(labels) if l == label]
+        ax.scatter(reduced_data[indices, 0], reduced_data[indices, 1], color=label_to_color[label], label=label)
+    
+    # Create a color bar with the label-to-color mapping
+    color_map = plt.cm.ScalarMappable(cmap=cm.rainbow)
+    color_map.set_array([])
+    fig.colorbar(color_map, ticks=np.linspace(0, 1, num_unique_labels), boundaries=np.arange(0, 1.1, 1/num_unique_labels))
 
+    ax.set_title('t-SNE of Video Latent Spaces')
+    ax.set_xlabel('t-SNE dimension 1')
+    ax.set_ylabel('t-SNE dimension 2')
+    ax.legend(loc='best')
+    
+    plt.savefig('tsne_distribution.png')
 
 def main():
-    data_dir = '/home/zanh/ventral-dorsal-replication/UCF-101/UCF-101'  # Adjust to your video data directory
+    data_dir = '/home/zanh/ventral-dorsal-replication/UCF-101/UCF-101'
+    wrapped_model = load_model()
 
-    # Initialize the model and load the trained weights
-    model = DualStream().to(device)
-    model = torch.nn.DataParallel(model, device_ids=[0, 1])
-    model.load_state_dict(torch.load('model.pth', map_location=device))
-    model.eval()
+    categories_video_paths = select_videos_from_each_category(data_dir)
+    all_latent_spaces = []
+    all_labels = []
 
-    # Attach hooks to capture the outputs of the last layers of each stream
-    hook_outputs = attach_hooks(model)
+    for category, video_paths in categories_video_paths.items():
+        latent_spaces, labels = generate_latent_space_and_labels(wrapped_model, video_paths, category)
+        all_latent_spaces.extend(latent_spaces)
+        all_labels.extend(labels)
 
-    # Example usage
-    print("Generating outputs for random videos from different categories:")
-    video_paths = select_random_videos(data_dir, num_videos=3, same_category=False)
-    generate_output(model, video_paths, hook_outputs)
-
-    print("\nGenerating outputs for random videos from the same category:")
-    video_paths = select_random_videos(data_dir, num_videos=2, same_category=True)
-    generate_output(model, video_paths, hook_outputs)
+    plot_tsne(np.array(all_latent_spaces), all_labels)
 
 if __name__ == '__main__':
     main()
