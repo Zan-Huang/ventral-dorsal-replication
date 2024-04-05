@@ -7,19 +7,21 @@ from main import read_video_frames
 import random
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.spatial.distance import euclidean
 from sklearn.manifold import TSNE
 import matplotlib.cm as cm
 
+# Set the device to the second GPU
 torch.cuda.set_device(1)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f'Using device: {device}')
 
+# Define the transform for the video frames
 transform = Compose([
     Resize((64, 65)),
     ToTensor(),
 ])
 
+# Wrapper class for the DualStream model
 class DualStreamWrapper(nn.Module):
     def __init__(self, dual_stream_model):
         super(DualStreamWrapper, self).__init__()
@@ -28,6 +30,7 @@ class DualStreamWrapper(nn.Module):
     def forward(self, x):
         return self.dual_stream(x)
 
+# Function to load the model
 def load_model():
     model_path = 'model.pth'
     dual_stream_model = DualStream().to(device)
@@ -36,10 +39,14 @@ def load_model():
     dual_stream_model.eval()
     return DualStreamWrapper(dual_stream_model)
 
-def select_videos_from_each_category(data_dir, num_videos_per_category=2):
+# Function to select videos from each category
+def select_videos_from_each_category(data_dir, num_videos_per_category=10, max_categories=10):
     video_paths = {}
     categories = os.listdir(data_dir)
-    for category in categories:
+    selected_categories = random.sample(categories, min(len(categories), max_categories))
+
+    for category in selected_categories:
+        print(category)
         category_path = os.path.join(data_dir, category)
         videos = os.listdir(category_path)
         videos = [os.path.join(category_path, video) for video in videos if video.endswith('.avi')]
@@ -47,84 +54,95 @@ def select_videos_from_each_category(data_dir, num_videos_per_category=2):
             video_paths[category] = random.sample(videos, num_videos_per_category)
         else:
             video_paths[category] = videos
+
     return video_paths
 
+# Function to load a video and apply transformations
 def load_video(video_path):
     frames = read_video_frames(video_path, transform, seq_len=5, num_seq=8, downsample=3)
     if frames is not None:
         frames = frames.unsqueeze(0)
     return frames.to(device)
 
-def generate_latent_space(model, video_paths):
-    latent_space = []
-    for video_path in video_paths:
-        video_data = load_video(video_path)
-        if video_data is None:
-            print(f"Skipping video {video_path}, as it does not have enough frames.")
-            continue
-
-        with torch.no_grad():
-            _, _, concat_output = model(video_data)
-        latent_space.append(concat_output.cpu().numpy().flatten())
-    return np.array(latent_space)
-
+# Function to generate latent spaces and labels
 def generate_latent_space_and_labels(model, video_paths, category_label):
     latent_space = []
+    latent_space_part1 = []
+    latent_space_part2 = []
     labels = []
     for video_path in video_paths:
         video_data = load_video(video_path)
+        print(video_path)
         if video_data is None:
             print(f"Skipping video {video_path}, as it does not have enough frames.")
             continue
 
         with torch.no_grad():
-            _, _, concat_output = model(video_data)
-        latent_space.append(concat_output.cpu().numpy().flatten())
+            _, _, concat_output, future_context = model(video_data)
+        # Split the context vector into two parts
+        part1, part2 = torch.split(future_context, concat_output.size(1)//2, dim=1)
+        latent_space.append(future_context.cpu().numpy().flatten())
+        latent_space_part1.append(part1.cpu().numpy().flatten())
+        latent_space_part2.append(part2.cpu().numpy().flatten())
         labels.append(category_label)
-    return np.array(latent_space), labels
+    return np.array(latent_space), np.array(latent_space_part1), np.array(latent_space_part2), labels
 
-def plot_tsne(latent_spaces, labels):
-    tsne = TSNE(n_components=2, random_state=42)
+# Function to plot t-SNE
+def plot_tsne(latent_spaces, labels, title, filename):
+    print(f"Computing t-SNE for {title}")
+    tsne = TSNE(n_components=2, perplexity=2, random_state=42, n_iter=5000)
     reduced_data = tsne.fit_transform(latent_spaces)
+
+    fig, ax = plt.subplots(figsize=(12, 8))
     
-    # Create a subplot for the scatter plot
-    fig, ax = plt.subplots(figsize=(10, 6))
-    
-    # Generate a color map based on the number of unique labels
+    # Generate a color map
     num_unique_labels = len(set(labels))
     colors = cm.rainbow(np.linspace(0, 1, num_unique_labels))
-    label_to_color = dict(zip(set(labels), colors))
-    
+    label_to_color = {label: color for label, color in zip(set(labels), colors)}
+
     for label in set(labels):
         indices = [i for i, l in enumerate(labels) if l == label]
         ax.scatter(reduced_data[indices, 0], reduced_data[indices, 1], color=label_to_color[label], label=label)
-    
-    # Create a color bar with the label-to-color mapping
-    color_map = plt.cm.ScalarMappable(cmap=cm.rainbow)
-    color_map.set_array([])
-    fig.colorbar(color_map, ticks=np.linspace(0, 1, num_unique_labels), boundaries=np.arange(0, 1.1, 1/num_unique_labels))
 
-    ax.set_title('t-SNE of Video Latent Spaces')
+    # Add color bar
+    color_map = plt.cm.ScalarMappable(cmap=cm.rainbow, norm=plt.Normalize(0, num_unique_labels))
+    cbar = fig.colorbar(color_map, ax=ax, boundaries=np.arange(-0.5, num_unique_labels), ticks=np.arange(0, num_unique_labels))
+    cbar.set_ticklabels(list(set(labels)))
+
+    ax.set_title(title)
     ax.set_xlabel('t-SNE dimension 1')
     ax.set_ylabel('t-SNE dimension 2')
     ax.legend(loc='best')
-    
-    plt.savefig('tsne_distribution.png')
 
+    plt.savefig(f'{filename}.png')
+    plt.close(fig)
+
+# Main function to run the model and generate t-SNE plots
 def main():
     data_dir = '/home/zanh/ventral-dorsal-replication/UCF-101/UCF-101'
     wrapped_model = load_model()
 
     categories_video_paths = select_videos_from_each_category(data_dir)
     all_latent_spaces = []
+    all_latent_spaces_part1 = []
+    all_latent_spaces_part2 = []
     all_labels = []
 
     for category, video_paths in categories_video_paths.items():
-        latent_spaces, labels = generate_latent_space_and_labels(wrapped_model, video_paths, category)
-        all_latent_spaces.extend(latent_spaces)
+        latent_space, latent_space_part1, latent_space_part2, labels = generate_latent_space_and_labels(wrapped_model, video_paths, category)
+        all_latent_spaces.extend(latent_space)
+        all_latent_spaces_part1.extend(latent_space_part1)
+        all_latent_spaces_part2.extend(latent_space_part2)
         all_labels.extend(labels)
 
-    plot_tsne(np.array(all_latent_spaces), all_labels)
+    # Plot the combined context vector
+    plot_tsne(np.array(all_latent_spaces), all_labels, 'Combined Context Vector', 'tsne_combined_context')
+    
+    # Plot the first part of the context vector
+    plot_tsne(np.array(all_latent_spaces_part1), all_labels, 'First Part of Context Vector', 'tsne_context_part1')
+
+    # Plot the second part of the context vector
+    plot_tsne(np.array(all_latent_spaces_part2), all_labels, 'Second Part of Context Vector', 'tsne_context_part2')
 
 if __name__ == '__main__':
     main()
