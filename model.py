@@ -7,7 +7,7 @@ import math
 import torch.nn.functional as F
 import torch.nn.init as init
 
-universal_dropout = 0.15
+universal_dropout = 0.20
 universal_drop_connect = 0.20
 
 class DPC_RNN(nn.Module):
@@ -54,6 +54,7 @@ class DPC_RNN(nn.Module):
         _, hidden = self.agg(feature[:, 0:N-self.pred_steps, :])
 
         hidden = hidden[:, -1, :]
+        future_context = hidden
 
         pred = []
         for i in range(self.pred_steps):
@@ -88,7 +89,7 @@ class DPC_RNN(nn.Module):
         #mask = torch.randint(low=0, high=1, size=score.shape, device=score.device)
         #print(mask)
 
-        return score, mask
+        return score, mask, future_context
 
     def _initialize_weights(self, module):
         for name, param in module.named_parameters():
@@ -101,31 +102,31 @@ class DPC_RNN(nn.Module):
 class DualStream(nn.Module):
     def __init__(self):
         super(DualStream, self).__init__()
-        self.conv1_layer = nn.Conv3d(in_channels=3, out_channels=256, kernel_size=(5, 7, 7), padding=(2, 3, 3), stride=(1, 2, 2))
+        self.conv1_layer = nn.Conv3d(in_channels=3, out_channels=128, kernel_size=(5, 7, 7), padding=(2, 3, 3), stride=(1, 2, 2))
         self.conv1_pool = nn.AvgPool3d(kernel_size=(1, 3, 3), padding=(0, 1, 1), stride=(1, 2, 2))
-        self.norm = nn.BatchNorm3d(256)
+        self.norm = nn.BatchNorm3d(128)
         self.relu = nn.LeakyReLU(negative_slope=0.01)
 
-        self.stream1_block1 = ResBlock(dim_in=256, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect)
-        self.stream1_block2 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect)
-        self.stream1_block3 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect)
-        self.stream1_block4 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect)
-        self.stream1_block5 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect)
-        self.stream1_block6 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect)
-        #self.stream1_block7 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect).to('cuda:0')
-        #self.stream1_block8 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect).to('cuda:0')
-        #self.stream1_block9 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect).to('cuda:0')
+        self.stream1_block1 = ResBlock(dim_in=128, dim_out=64, temp_kernel_size=3, stride=1, dim_inner=16, drop_connect_rate=universal_drop_connect)
+        self.stream1_block2 = ResBlock(dim_in=64, dim_out=64, temp_kernel_size=3, stride=1, dim_inner=16, drop_connect_rate=universal_drop_connect)
+        self.stream1_block3 = ResBlock(dim_in=64, dim_out=64, temp_kernel_size=3, stride=1, dim_inner=16, drop_connect_rate=universal_drop_connect)
+        self.stream1_block4 = ResBlock(dim_in=64, dim_out=64, temp_kernel_size=3, stride=1, dim_inner=16, drop_connect_rate=universal_drop_connect)
+        self.stream1_block5 = ResBlock(dim_in=64, dim_out=64, temp_kernel_size=3, stride=1, dim_inner=16, drop_connect_rate=universal_drop_connect)
+        self.stream1_block6 = ResBlock(dim_in=64, dim_out=64, temp_kernel_size=3, stride=1, dim_inner=16, drop_connect_rate=universal_drop_connect)
+        self.stream1_block7 = ResBlock(dim_in=64, dim_out=64, temp_kernel_size=3, stride=1, dim_inner=16, drop_connect_rate=universal_drop_connect)
+        self.stream1_block8 = ResBlock(dim_in=64, dim_out=64, temp_kernel_size=3, stride=1, dim_inner=16, drop_connect_rate=universal_drop_connect)
+        self.stream1_block9 = ResBlock(dim_in=64, dim_out=64, temp_kernel_size=3, stride=1, dim_inner=16, drop_connect_rate=universal_drop_connect)
         #self.stream1_block10 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect).to('cuda:0')
 
-        self.stream2_block1 = ResBlock(dim_in=256, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect)
-        self.stream2_block2 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect)
-        self.stream2_block3 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect)
-        self.stream2_block4 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect)
-        self.stream2_block5 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect)
-        self.stream2_block6 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect)
-        #self.stream2_block7 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect).to('cuda:1')
-        #self.stream2_block8 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect).to('cuda:1')
-        #self.stream2_block9 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect).to('cuda:1')
+        self.stream2_block1 = ResBlock(dim_in=128, dim_out=64, temp_kernel_size=3, stride=1, dim_inner=16, drop_connect_rate=universal_drop_connect)
+        self.stream2_block2 = ResBlock(dim_in=64, dim_out=64, temp_kernel_size=3, stride=1, dim_inner=16, drop_connect_rate=universal_drop_connect)
+        self.stream2_block3 = ResBlock(dim_in=64, dim_out=64, temp_kernel_size=3, stride=1, dim_inner=16, drop_connect_rate=universal_drop_connect)
+        self.stream2_block4 = ResBlock(dim_in=64, dim_out=64, temp_kernel_size=3, stride=1, dim_inner=16, drop_connect_rate=universal_drop_connect)
+        self.stream2_block5 = ResBlock(dim_in=64, dim_out=64, temp_kernel_size=3, stride=1, dim_inner=16, drop_connect_rate=universal_drop_connect)
+        self.stream2_block6 = ResBlock(dim_in=64, dim_out=64, temp_kernel_size=3, stride=1, dim_inner=16, drop_connect_rate=universal_drop_connect)
+        self.stream2_block7 = ResBlock(dim_in=64, dim_out=64, temp_kernel_size=3, stride=1, dim_inner=16, drop_connect_rate=universal_drop_connect)
+        self.stream2_block8 = ResBlock(dim_in=64, dim_out=64, temp_kernel_size=3, stride=1, dim_inner=16, drop_connect_rate=universal_drop_connect)
+        self.stream2_block9 = ResBlock(dim_in=64, dim_out=64, temp_kernel_size=3, stride=1, dim_inner=16, drop_connect_rate=universal_drop_connect)
         #self.stream2_block10 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect).to('cuda:1')
 
         
@@ -144,7 +145,7 @@ class DualStream(nn.Module):
                     init.kaiming_uniform_(param, a=math.sqrt(5))"""
         self.concat_hook_layer = nn.Identity()
 
-        self.dpc_rnn = DPC_RNN(feature_size=256, hidden_size=256, kernel_size=1, num_layers=1, pred_steps=3, seq_len=8).to('cuda:1')
+        self.dpc_rnn = DPC_RNN(feature_size=128, hidden_size=128, kernel_size=1, num_layers=1, pred_steps=3, seq_len=8).to('cuda:1')
 
     def forward(self, x):
         B, N, SL, C, H, W = x.shape
@@ -162,9 +163,9 @@ class DualStream(nn.Module):
         stream1layer4 = self.stream1_block4(stream1layer3)
         stream1layer5 = self.stream1_block5(stream1layer4)
         stream1layer6 = self.stream1_block6(stream1layer5)
-        #stream1layer7 = self.stream1_block7(stream1layer6)
-        #stream1layer8 = self.stream1_block8(stream1layer7)
-        #stream1layer9 = self.stream1_block9(stream1layer8)
+        stream1layer7 = self.stream1_block7(stream1layer6)
+        stream1layer8 = self.stream1_block8(stream1layer7)
+        stream1layer9 = self.stream1_block9(stream1layer8)
         #stream1layer10 = self.stream1_block10(stream1layer9)
 
         stream2layer1 = self.stream2_block1(shared_layer_relu)
@@ -173,19 +174,19 @@ class DualStream(nn.Module):
         stream2layer4 = self.stream2_block4(stream2layer3)
         stream2layer5 = self.stream2_block5(stream2layer4)
         stream2layer6 = self.stream2_block6(stream2layer5)
-        #stream2layer7 = self.stream2_block7(stream2layer6)
-        #stream2layer8 = self.stream2_block8(stream2layer7)
-        #stream2layer9 = self.stream2_block9(stream2layer8)
+        stream2layer7 = self.stream2_block7(stream2layer6)
+        stream2layer8 = self.stream2_block8(stream2layer7)
+        stream2layer9 = self.stream2_block9(stream2layer8)
         #stream2layer10 = self.stream2_block10(stream2layer9)
 
-        concat_layer = torch.cat((stream1layer6, stream2layer6), dim=1)
+        concat_layer = torch.cat((stream1layer9, stream2layer9), dim=1)
 
         concat_layer = self.concat_hook_layer(concat_layer)
 
         concat_layer = nn.Dropout(universal_dropout)(concat_layer)
 
-        prediction, target = self.dpc_rnn(concat_layer, B, N, 256, SL, H, W)
+        prediction, target, future_context = self.dpc_rnn(concat_layer, B, N, 128, SL, H, W)
 
-        return prediction, target
+        return prediction, target, concat_layer, future_context
     
     
