@@ -9,6 +9,7 @@ import ssl
 from PIL import Image
 import cv2
 import torch.multiprocessing as mp
+import numpy as np
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader, Dataset
 import random
@@ -27,6 +28,11 @@ from torch.utils import data
 from torchvision import datasets, models, transforms
 from torchvision.io import read_video
 from torchvision.utils import make_grid
+
+import matplotlib.pyplot as plt
+from sklearn.manifold import TSNE
+import matplotlib.cm as cm
+import io
 
 
 def log_sampled_frames(frames, num_seq=8, seq_len=5, downsample=3, resize_shape=(64, 65)):
@@ -47,8 +53,8 @@ def log_sampled_frames(frames, num_seq=8, seq_len=5, downsample=3, resize_shape=
     wandb.log({"sampled_frames": [wandb.Image(grid_image, caption="Sampled Frames")]})
 
 
-#data_dir = '/home/libiadm/export/HDD2/datasets/moments_in_time/Moments_in_Time_Raw'
-data_dir = '/home/zanh/ventral-dorsal-replication/UCF-101/UCF-101'
+data_dir = '/home/libiadm/export/HDD2/datasets/moments_in_time/Moments_in_Time_Raw/training'
+#data_dir = '/home/zanh/ventral-dorsal-replication/UCF-101/UCF-101'
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Using device:", device)
@@ -74,7 +80,7 @@ transform = v2.Compose([
 ])
 
 class MomentsInTimeDataset(Dataset):
-    def __init__(self, root_dir, split='training', transform=None, use_percentage=1.0, seq_len=5, num_seq=8, downsample=3):
+    def __init__(self, root_dir, split='training', transform=None, use_percentage=0.05, seq_len=5, num_seq=8, downsample=3):
         #self.root_dir = os.path.join(root_dir, split) #we are using non split
         self.root_dir = root_dir
         self.transform = transform
@@ -82,35 +88,50 @@ class MomentsInTimeDataset(Dataset):
         self.num_seq = num_seq
         self.downsample = downsample
         self.video_files = []
+        self.labels = [] 
         
         # Adjust for Moments in Time directory structure
         for action_category in os.listdir(self.root_dir):
+            print(action_category)
             category_path = os.path.join(self.root_dir, action_category)
             if os.path.isdir(category_path):
                 for video_file in os.listdir(category_path):
                     video_path = os.path.join(category_path, video_file)
                     # Adjust the file extension as needed for your dataset
-                    if video_file.endswith('.avi'):
+                    if video_file.endswith('.mp4'):
                         self.video_files.append(video_path)
-        
-        random.shuffle(self.video_files)
+                        self.labels.append(action_category)
+
+        combined = list(zip(self.video_files, self.labels))
+        random.shuffle(combined)
+        self.video_files, self.labels = zip(*combined)
+
         num_files_to_use = int(len(self.video_files) * use_percentage)
         self.video_files = self.video_files[:num_files_to_use]
+        self.labels = self.labels[:num_files_to_use]
 
     def __len__(self):
         print(len(self.video_files))
         return len(self.video_files)
-
+    
     def __getitem__(self, idx):
-        video_frames = None
+        video_path = self.video_files[idx]
+        label = self.labels[idx]  # Get the label for the current index
+
+        video_frames = read_video_frames(video_path, self.transform, self.seq_len, self.num_seq, self.downsample)
+    
         attempts = 0
-        while video_frames is None:
-            video_path = self.video_files[(idx + attempts) % len(self.video_files)]
+        while video_frames is None and attempts < len(self.video_files):
+            idx = (idx + 1) % len(self.video_files)  # Move to the next index
+            video_path = self.video_files[idx]
+            label = self.labels[idx]  # Update the label accordingly
             video_frames = read_video_frames(video_path, self.transform, self.seq_len, self.num_seq, self.downsample)
             attempts += 1
-            if attempts >= len(self.video_files):
-                raise RuntimeError("Failed to find a video with enough frames")
-        return {'video': video_frames}
+
+        if video_frames is None:
+            raise RuntimeError("Failed to find a video with enough frames after multiple attempts.")
+
+        return {'video': video_frames, 'label': label}
 
 def read_video_frames(video_path, transform, seq_len=5, num_seq=8, downsample=3):
     cap = cv2.VideoCapture(video_path)
@@ -177,7 +198,7 @@ def calc_topk_accuracy(output, target, topk=(1,)):
         res.append(correct_k.mul_(1 / batch_size))
     return res
 
-BATCH_SIZE = 38
+BATCH_SIZE = 46
 LR = 0.001
 
 def main():
@@ -186,14 +207,14 @@ def main():
     train_dataset = MomentsInTimeDataset(root_dir=data_dir, split='training', transform=transform)
     val_dataset = MomentsInTimeDataset(root_dir=data_dir, split='validation', transform=transform)
 
-    train_percentage = 0.8
+    train_percentage = 0.85
     train_size = int(train_percentage * len(train_dataset))
     val_size = len(train_dataset) - train_size
 
     train_dataset, val_dataset = data.random_split(train_dataset, [train_size, val_size])
 
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=10, pin_memory=True, drop_last=True)
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=10, pin_memory=True, drop_last=True)
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=16, pin_memory=True, drop_last=True)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=16, pin_memory=True, drop_last=True)
 
     #train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=10, pin_memory=True, drop_last=True)
     #val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=10, pin_memory = True, drop_last=True)
@@ -216,10 +237,8 @@ def main():
 
         for i, batch in enumerate(train_loader):
             inputs = batch['video'].to(device)
-            #inputs = torch.zeros(inputs.shape).to(device)
-            #inputs = single_example
 
-            score, mask = model(inputs)
+            score, mask, embedding, future_context = model(inputs)
 
             B = inputs.size(0)
 
@@ -259,13 +278,15 @@ def main():
 
         #scheduler.step()
         model.eval()
+
         val_loss = 0.0
         val_top_k_accuracy = 0.0
         with torch.no_grad():
             for batch in val_loader:
                 inputs = batch['video'].to(device)
 
-                score, mask = model(inputs)
+                score, mask, embedding, future_context = model(inputs)
+
                 B = inputs.size(0)
                 
                 score_flattened = score.reshape(B*NP*SQ, B2*NS*SQ)
