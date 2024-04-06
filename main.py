@@ -53,8 +53,8 @@ def log_sampled_frames(frames, num_seq=8, seq_len=5, downsample=3, resize_shape=
     wandb.log({"sampled_frames": [wandb.Image(grid_image, caption="Sampled Frames")]})
 
 
-data_dir = '/home/libiadm/export/HDD2/datasets/moments_in_time/Moments_in_Time_Raw/training'
-#data_dir = '/home/zanh/ventral-dorsal-replication/UCF-101/UCF-101'
+#data_dir = '/home/libiadm/export/HDD2/datasets/moments_in_time/Moments_in_Time_Raw/training'
+data_dir = '/home/zanh/ventral-dorsal-replication/UCF-101/UCF-101'
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Using device:", device)
@@ -80,7 +80,7 @@ transform = v2.Compose([
 ])
 
 class MomentsInTimeDataset(Dataset):
-    def __init__(self, root_dir, split='training', transform=None, use_percentage=0.05, seq_len=5, num_seq=8, downsample=3):
+    def __init__(self, root_dir, split='training', transform=None, use_percentage=1.0, seq_len=5, num_seq=8, downsample=3):
         #self.root_dir = os.path.join(root_dir, split) #we are using non split
         self.root_dir = root_dir
         self.transform = transform
@@ -98,7 +98,7 @@ class MomentsInTimeDataset(Dataset):
                 for video_file in os.listdir(category_path):
                     video_path = os.path.join(category_path, video_file)
                     # Adjust the file extension as needed for your dataset
-                    if video_file.endswith('.mp4'):
+                    if video_file.endswith('.avi'):
                         self.video_files.append(video_path)
                         self.labels.append(action_category)
 
@@ -198,7 +198,7 @@ def calc_topk_accuracy(output, target, topk=(1,)):
         res.append(correct_k.mul_(1 / batch_size))
     return res
 
-BATCH_SIZE = 46
+BATCH_SIZE = 40
 LR = 0.001
 
 def main():
@@ -305,11 +305,12 @@ def main():
         wandb.log({"val_loss": average_val_loss})
         wandb.log({"validation_top15_accuracy": average_val_top_k_accuracy})
 
-        checkpoint_path = 'model.pth'
+        models_dir = "models"
+        
+        checkpoint_path = os.path.join(models_dir, f'model_epoch_{epoch+1}.pth')
         if (epoch + 1) % 1 == 0:
             torch.save(model.state_dict(), checkpoint_path)
-            wandb.save(checkpoint_path)
-            print(f"Saved model checkpoint at epoch {epoch + 1}")
+            print(f"Saved model checkpoint at {checkpoint_path}")
 
     wandb.finish()
 
