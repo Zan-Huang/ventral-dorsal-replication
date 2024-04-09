@@ -7,7 +7,7 @@ import math
 import torch.nn.functional as F
 import torch.nn.init as init
 
-universal_dropout = 0.20
+universal_dropout = 0.10
 universal_drop_connect = 0.20
 
 class DPC_RNN(nn.Module):
@@ -54,7 +54,7 @@ class DPC_RNN(nn.Module):
         _, hidden = self.agg(feature[:, 0:N-self.pred_steps, :])
 
         hidden = hidden[:, -1, :]
-        future_context = hidden
+        future_context = F.avg_pool3d(hidden, (1, 16, 17), stride=1).squeeze(-1).squeeze(-1)
 
         pred = []
         for i in range(self.pred_steps):
@@ -152,6 +152,8 @@ class DualStream(nn.Module):
         x = x.view(B*N, C, SL, H, W)
 
         shared_layer = self.conv1_layer(x)
+
+        shared_layer = nn.Dropout(universal_dropout)(shared_layer)
 
         shared_layer_pool = self.conv1_pool(shared_layer)
         shared_layer_norm = self.norm(shared_layer_pool)
