@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 from torchvision.transforms import Compose, Resize, ToTensor
 from model import DualStream
+from single_stream_model import SingleStream
 from main import read_video_frames
 import random
 import numpy as np
@@ -32,7 +33,7 @@ class DualStreamWrapper(nn.Module):
 
 # Function to load the model
 def load_model():
-    model_path = 'model.pth'
+    model_path = 'models/model_epoch_73.pth'
     dual_stream_model = DualStream().to(device)
     state_dict = torch.load(model_path, map_location=device)
     dual_stream_model.load_state_dict(state_dict, strict=False)
@@ -40,7 +41,7 @@ def load_model():
     return DualStreamWrapper(dual_stream_model)
 
 # Function to select videos from each category
-def select_videos_from_each_category(data_dir, num_videos_per_category=10, max_categories=10):
+def select_videos_from_each_category(data_dir, num_videos_per_category=30, max_categories=7):
     video_paths = {}
     categories = os.listdir(data_dir)
     selected_categories = random.sample(categories, min(len(categories), max_categories))
@@ -79,6 +80,8 @@ def generate_latent_space_and_labels(model, video_paths, category_label):
 
         with torch.no_grad():
             _, _, concat_output, future_context = model(video_data)
+            #comment out the below line for dual stream model
+        
         # Split the context vector into two parts
         part1, part2 = torch.split(future_context, concat_output.size(1)//2, dim=1)
         latent_space.append(future_context.cpu().numpy().flatten())
