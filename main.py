@@ -241,7 +241,15 @@ def main():
     wandb.init(project="Dual-Stream-New", config=config)
     transform = setup_transforms()
     train_loader, val_loader = setup_data_loaders(config['data_dir'], transform)
-    model = DualStream().to(config['device'])
+    
+    # Initialize the model and move it to GPU
+    model = DualStream()
+    if torch.cuda.device_count() > 1:
+        print(f"Using {torch.cuda.device_count()} GPUs!")
+        # Wrap the model for multi-GPU training
+        model = nn.DataParallel(model)
+    model.to(config['device'])
+    
     criterion = nn.CrossEntropyLoss().to(config['device'])
     optimizer = optim.Adam(model.parameters(), lr=config['learning_rate'], weight_decay=1e-5)
 
@@ -253,7 +261,7 @@ def main():
         # Save model checkpoint
         if (epoch + 1) % 1 == 0:  # Adjust as per your checkpoint saving frequency
             checkpoint_path = os.path.join("models", f'model_epoch_{epoch+1}.pth')
-            save_checkpoint(model, checkpoint_path)
+            save_checkpoint(model.module if isinstance(model, nn.DataParallel) else model, checkpoint_path)
             print(f"Saved model checkpoint at {checkpoint_path}")
 
     wandb.finish()
