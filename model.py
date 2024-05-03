@@ -40,7 +40,7 @@ class DPC_RNN(nn.Module):
 
     def forward(self, block, B, N, C, SL, H, W):
         finalW = 16
-        finalH = 17
+        finalH = 16
 
         feature = F.avg_pool3d(block, ((5, 1, 1)), stride=(1, 1, 1))
         feature_inf_all = feature.view(B, N, C, finalW, finalH)
@@ -54,7 +54,7 @@ class DPC_RNN(nn.Module):
         _, hidden = self.agg(feature[:, 0:N-self.pred_steps, :])
 
         hidden = hidden[:, -1, :]
-        future_context = F.avg_pool3d(hidden, (1, 16, 17), stride=1).squeeze(-1).squeeze(-1)
+        future_context = F.avg_pool3d(hidden, (1, 16, 16), stride=1).squeeze(-1).squeeze(-1)
 
         pred = []
         for i in range(self.pred_steps):
@@ -85,9 +85,6 @@ class DPC_RNN(nn.Module):
                 tmp[j, torch.arange(self.pred_steps), j, torch.arange(N-self.pred_steps, N)] = 1
 
             mask = tmp.view(B, finalH * finalW, self.pred_steps, B, finalH * finalW, N).permute(0,2,1,3,5,4)
-
-        #mask = torch.randint(low=0, high=1, size=score.shape, device=score.device)
-        #print(mask)
 
         return score, mask, future_context
 
@@ -129,23 +126,9 @@ class DualStream(nn.Module):
         self.stream2_block9 = ResBlock(dim_in=64, dim_out=64, temp_kernel_size=3, stride=1, dim_inner=16, drop_connect_rate=universal_drop_connect)
         #self.stream2_block10 = ResBlock(dim_in=128, dim_out=128, temp_kernel_size=3, stride=1, dim_inner=32, drop_connect_rate=universal_drop_connect).to('cuda:1')
 
-        
-        """init.kaiming_normal_(self.conv1_layer.weight, mode='fan_out', nonlinearity='relu')
-        
-        # Initialize stream1 blocks with Kaiming initialization
-        for block in [self.stream1_block1, self.stream1_block2]:
-            for name, param in block.named_parameters():
-                if 'weight' in name and param.dim() > 1:
-                    init.kaiming_uniform_(param, a=math.sqrt(5))
-
-        # Initialize stream2 blocks with Kaiming initialization
-        for block in [self.stream2_block1, self.stream2_block2]:
-            for name, param in block.named_parameters():
-                if 'weight' in name and param.dim() > 1:
-                    init.kaiming_uniform_(param, a=math.sqrt(5))"""
         self.concat_hook_layer = nn.Identity()
 
-        self.dpc_rnn = DPC_RNN(feature_size=128, hidden_size=128, kernel_size=1, num_layers=1, pred_steps=3, seq_len=8).to('cuda:1')
+        self.dpc_rnn = DPC_RNN(feature_size=128, hidden_size=128, kernel_size=1, num_layers=1, pred_steps=3, seq_len=8)
 
     def forward(self, x):
         B, N, SL, C, H, W = x.shape
